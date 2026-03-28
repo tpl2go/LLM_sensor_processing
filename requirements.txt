@@ -12,6 +12,7 @@ scipy==1.12.0
 librosa
 peft
 pmdarima
+scikit-learn==1.5
 mir_eval
 matplotlib
 httpx==0.27.2
