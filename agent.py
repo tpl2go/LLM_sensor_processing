@@ -109,14 +109,23 @@ class ReflectOpenAIAgent(OpenAIAgent):
         self.performance_hist.append(performance)
 
         perf_hist = [
-            f"In trial #{i+1}, the performance is - " + self.performance_hist[i]
+            f"In trial #{i + 1}, the performance is - " + self.performance_hist[i]
             for i in range(len(self.performance_hist))
         ]
-        perf_hist = "An external source perform evalution on your output signal w.r.t. the ground truth signal. " + ". ".join(perf_hist)
-        self.chat[0]["content"] = self.chat[0]["content"].format(
-            context=context[2:], question=question, performance=performance, performance_hist=perf_hist
+        perf_hist = (
+            "An external source perform evalution on your output signal w.r.t. the ground truth signal. "
+            + ". ".join(perf_hist)
         )
-        logger.info("ReflectOpenAIAgent updated | performance_history_size=%s", len(self.performance_hist))
+        self.chat[0]["content"] = self.chat[0]["content"].format(
+            context=context[2:],
+            question=question,
+            performance=performance,
+            performance_hist=perf_hist,
+        )
+        logger.info(
+            "ReflectOpenAIAgent updated | performance_history_size=%s",
+            len(self.performance_hist),
+        )
 
     def step(self, trial=0):
         logger.info("ReflectOpenAIAgent step start | trial=%s", trial)
@@ -164,7 +173,10 @@ class EvalOpenAIAgent(OpenAIAgent):
 
     def update_memory(self, result):
         self.memory.append(result)
-        self.memory_str = [f"In trial #{i+1}, your evaluation is - " + self.memory[i] for i in range(len(self.memory))]
+        self.memory_str = [
+            f"In trial #{i + 1}, your evaluation is - " + self.memory[i]
+            for i in range(len(self.memory))
+        ]
         self.memory_str = " ".join(self.memory_str)
         logger.info("Eval memory updated | size=%s", len(self.memory))
 
@@ -174,13 +186,20 @@ class EvalOpenAIAgent(OpenAIAgent):
 
     def init(self, context, question, vis_result=None):
         self.chat[0]["content"] = self.chat[0]["content"].format(
-            context=context[2:], question=question, memory=self.memory_str, vis_result=vis_result
+            context=context[2:],
+            question=question,
+            memory=self.memory_str,
+            vis_result=vis_result,
         )
-        logger.info("EvalOpenAIAgent prompt initialized | context_messages=%s", len(context))
+        logger.info(
+            "EvalOpenAIAgent prompt initialized | context_messages=%s", len(context)
+        )
 
     def update(self, content, role):
         self.chat.append({"role": role, "content": content})
-        logger.info("Eval chat updated | role=%s total_messages=%s", role, len(self.chat))
+        logger.info(
+            "Eval chat updated | role=%s total_messages=%s", role, len(self.chat)
+        )
 
     def step(self, stop=None):
         logger.info("EvalOpenAIAgent step start | stop=%s", stop)
@@ -209,7 +228,9 @@ input_data, sampling_rate = read_data(args.input_file)
 print(f"The produced output_data is: ", output_data)
 """
         vis_result = redirect_stdout(vis_output_str, global_dict, local_dict)
-        logger.info("Evaluator visualization context prepared | chars=%s", len(vis_result))
+        logger.info(
+            "Evaluator visualization context prepared | chars=%s", len(vis_result)
+        )
 
         self.init(context, question, vis_result)
         reply = ""
@@ -232,15 +253,20 @@ print(f"The produced output_data is: ", output_data)
             else:
                 code_to_execute = "\n" + code
                 code_to_execute += """
-from utils import read_data, store_data
+from utils import read_data, store_data, challenge_feedback
 output_data, sampling_rate = read_data(args.output_file)
 input_data, sampling_rate = read_data(args.input_file)
 """
 
                 if "def inspection(" in code_to_execute:
                     code_to_execute += "inspect_result = inspection(input_data, output_data, sampling_rate)\n"
-                    code_to_execute += "challenge_feedback(inspect_result, inspection=True)\n"
-                elif "def challenger(" in code_to_execute or "def verifier(" in code_to_execute:
+                    code_to_execute += (
+                        "challenge_feedback(inspect_result, inspection=True)\n"
+                    )
+                elif (
+                    "def challenger(" in code_to_execute
+                    or "def verifier(" in code_to_execute
+                ):
                     if self.args.eval == "self_coding":
                         code_to_execute += "result = challenger(input_data, output_data, sampling_rate)\n"
                     else:
@@ -248,7 +274,9 @@ input_data, sampling_rate = read_data(args.input_file)
                     code_to_execute += "challenge_feedback(result)\n"
 
                 result = redirect_stdout(code_to_execute, global_dict, local_dict)
-                logger.info("Evaluator code execution complete | output_chars=%s", len(result))
+                logger.info(
+                    "Evaluator code execution complete | output_chars=%s", len(result)
+                )
 
                 if len(result) == 0:
                     result += "The above program prints nothing. If it is not intended, remember to use print() function. Remember to put your final evaluation after [EVALUATION] and the iteration will stop."
@@ -265,7 +293,10 @@ input_data, sampling_rate = read_data(args.input_file)
                     logger.info("Evaluator execution failure count=%s", failed)
                     continue
 
-                if "[EVALUATION]" in reply or "The challenge/verification result is: " in result:
+                if (
+                    "[EVALUATION]" in reply
+                    or "The challenge/verification result is: " in result
+                ):
                     succeeded = True
                     logger.info("Evaluator success condition met.")
             i += 1
