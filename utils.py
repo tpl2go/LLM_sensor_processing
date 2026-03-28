@@ -3,6 +3,7 @@ import openai
 import re 
 import csv
 import subprocess
+import logging
 from tqdm import tqdm
 import os
 import sys
@@ -17,13 +18,16 @@ from caption import inspect_spectrogram, inspect_fft, inspect_ts
 from scipy.io import wavfile
 from openai import OpenAI
 
+logger = logging.getLogger(__name__)
+
 def safe_execute(code_string: str, global_dict, local_dict, keys=None):
 	ans = None
-	# print(global_dict, local_dict)
+	logger.info("Executing generated code | length=%s chars", len(code_string))
 	try:
 		exec(code_string, global_dict, local_dict)
 	except Exception as e:
 		print(f"An error occurred: {e}")
+		logger.exception("Generated code execution failed.")
 
 	return ans
 
@@ -33,6 +37,7 @@ def read_data(inputs):
 		input_file = inputs[0]
 	else:
 		input_file = inputs
+	logger.info("Reading input data from %s", input_file)
 	if 'wav' in input_file:
 		sampling_rate, data = wavfile.read(input_file)
 	elif 'npy' in input_file:
@@ -59,6 +64,12 @@ def read_data(inputs):
 			sampling_rate = 50
 		else:
 			sampling_rate = None
+	if hasattr(data, "shape"):
+		logger.info("Loaded data shape=%s sampling_rate=%s", data.shape, sampling_rate)
+	elif isinstance(data, list):
+		logger.info("Loaded list data with %s entries sampling_rate=%s", len(data), sampling_rate)
+	else:
+		logger.info("Loaded data type=%s sampling_rate=%s", type(data), sampling_rate)
 	return data, sampling_rate
 
 def store_data(args, data, fs):
@@ -66,7 +77,7 @@ def store_data(args, data, fs):
 		wavfile.write(args.output_file, fs, data.astype(np.int16))
 	else:
 		np.save(args.output_file, data)
-	# print("The processed data has been successfully stored.")
+	logger.info("Stored output data to %s", args.output_file)
 
 def convert_to_message(m_mse):
 	message = 'None'
@@ -98,34 +109,54 @@ def challenge_feedback(pre_result, inspection=False):
 	message = None
 	if inspection and pre_result:
 		print("The inspection passed. Continue...")
+		logger.info("Inspection result: passed")
 		return True
 	print('The challenge/verification result is: ', pre_result)
+	logger.info("Challenge/verification raw result=%s", pre_result)
 	message = "A challenger/verifier evaluated the result." 
 	message = message + " The test passed." if pre_result else message + " The test failed."
 	print(message)
+	logger.info("Challenge/verification message=%s", message)
 	return message
 
-def openai_api(messages, model, temperature=0.2, top_p=0.1, stop=None):
+def openai_api(messages, model, temperature=0.2, top_p=0.1, stop=None, request_timeout=180.0, max_attempts=10):
 
-	got_result = False
 	using_together = 'Llama' in model or 'Qwen' in model
+	logger.info(
+		"Preparing API client | model=%s using_together=%s timeout=%ss messages=%s",
+		model,
+		using_together,
+		request_timeout,
+		len(messages),
+	)
 	if using_together:
+		logger.info("Loading Together API key from together_key.txt")
 		client = openai.OpenAI(
 			api_key=open("together_key.txt").read().strip(),
 			base_url="https://api.together.xyz/v1",
+			timeout=request_timeout,
 			)
 	else:
-		client = OpenAI()
-	trial = 0
-	while not got_result and trial <= 10:
+		client = OpenAI(timeout=request_timeout)
+
+	last_error = None
+	for trial in range(1, max_attempts + 1):
+		logger.info("API attempt %s/%s started", trial, max_attempts)
 		try:
 			if model in ('o1', 'o3-mini'):
+				logger.info("Sending streaming chat completion for reasoning model with stop=%s", stop)
 				stream = client.chat.completions.create(
 					model=model,
 					messages=messages,
 					stream=True,
 					stop=stop)
 			else:
+				logger.info(
+					"Sending streaming chat completion | max_tokens=2048 temperature=%s top_p=%s stop=%s",
+					temperature,
+					top_p,
+					stop,
+				)
 				stream = client.chat.completions.create(
 					model=model,
 					messages=messages,
@@ -134,17 +165,36 @@ def openai_api(messages, model, temperature=0.2, top_p=0.1, stop=None):
 					temperature=temperature, top_p=top_p, stop=stop)
 			
 			message = ""
+			chunk_count = 0
 			for chunk in stream:
-				# print(chunk.choices[0].delta.content or "", end="", flush=True)
+				chunk_count += 1
 				if chunk.choices[0].delta.content is not None:
 					message += chunk.choices[0].delta.content
-			got_result = True
-			trial += 1
-			
-		except Exception:
-			sleep(3)
+				if chunk_count % 50 == 0:
+					logger.info(
+						"Streaming progress | attempt=%s chunks=%s chars=%s",
+						trial,
+						chunk_count,
+						len(message),
+					)
 
-	return message
+			logger.info(
+				"API attempt %s succeeded | chunks=%s response_chars=%s",
+				trial,
+				chunk_count,
+				len(message),
+			)
+			return message
+			
+		except Exception as exc:
+			last_error = exc
+			logger.exception("API attempt %s failed. Retrying after backoff.", trial)
+			if trial < max_attempts:
+				sleep(3)
+
+	error_message = f"API call failed after {max_attempts} attempts: {last_error}"
+	logger.error(error_message)
+	raise RuntimeError(error_message) from last_error
 
 def extract_code(response):
 
@@ -211,6 +261,7 @@ def write_to_csv_file(mode, query, index, log_name, mse):
 			writer = csv.writer(file)
 			writer.writerow(['mode', 'task', 'index', 'score'])
 			writer.writerow(data)
+	logger.info("Appended evaluation row to %s", csv_file_path)
 
 def redirect_stdout(code_to_execute, global_dict, local_dict):
 	# Create a string buffer to capture the output
@@ -221,10 +272,11 @@ def redirect_stdout(code_to_execute, global_dict, local_dict):
 	sys.stdout = buffer
 
 	# Execute the code
-	safe_execute(code_to_execute, global_dict, local_dict)
-
-	# Reset the standard output to its original value
-	sys.stdout = sys.__stdout__
+	try:
+		safe_execute(code_to_execute, global_dict, local_dict)
+	finally:
+		# Reset the standard output to its original value
+		sys.stdout = sys.__stdout__
 
 	# Get the captured output from the buffer
 	output = buffer.getvalue()
@@ -258,6 +310,7 @@ def extract_array_from_str(string):
 
 def add_execution_string(args, returned_code):
 	
+	logger.info("Building executable code wrapper for generated code | code_length=%s", len(returned_code))
 	code_to_execute = """
 from utils import read_data, store_data
 input_data, sampling_rate = read_data(args.input_file)
@@ -277,6 +330,7 @@ input_data, sampling_rate = read_data(args.input_file)
 		code_to_execute +="store_data(args, output_data, sampling_rate)\n"
 		code_to_execute +="print('The solver runs successfully.')"
 		# code_to_execute += "print(output_data)"
+	logger.info("Executable code wrapper built | total_length=%s", len(code_to_execute))
 	
 	return code_to_execute
 
