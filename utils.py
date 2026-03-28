@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 def safe_execute(code_string: str, global_dict, local_dict, keys=None):
     ans = None
     logger.info("Executing generated code | length=%s chars", len(code_string))
-    logger.debug("Generated code: %s", code_string)
+    logger.info("Generated code: %s", code_string)
     try:
         exec(code_string, global_dict, local_dict)
     except Exception as e:
